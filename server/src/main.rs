@@ -3,33 +3,35 @@ use std::{
     io::{Read, Write},
     net::{TcpStream, TcpListener}, sync::mpsc::{Receiver, Sender, self}, time::Duration,
 };
+use random_string::generate;
 
-fn broadcast_message(msg_rx: Receiver<String>, client_rx: Receiver<TcpStream>) {
-    let mut clients: Vec<TcpStream> = Vec::new();
+struct ClientMsg {
+    message: String,
+    client_id: String,
+}
+
+fn broadcast_message(msg_rx: Receiver<ClientMsg>, client_rx: Receiver<(TcpStream, String)>) {
+    let mut clients: Vec<(TcpStream, String)> = Vec::new();
     loop {
-        while let Ok(new_client) = client_rx.try_recv() {
-            clients.push(new_client);
-        }
 
+        while let Ok((new_client, id)) = client_rx.try_recv() {
+            clients.push((new_client, id));
+        }
 
 
         while let Ok(msg) = msg_rx.try_recv() {
-            clients.retain(|mut client| {
-                client.write_all(msg.as_bytes()).is_ok()
-            });
+            for (client, id) in clients.iter_mut() {
+                if msg.client_id != *id {
+                    let _ = client.write_all(msg.message.as_bytes()).unwrap();
+                }
+            }
         }
 
-        // while let Ok(msg) = msg_rx.try_recv() {
-        //     for client in clients.iter_mut() {
-        //         client.write_all(msg.as_bytes()).is_ok();
-
-        //     }
-        // }
         thread::sleep(Duration::from_millis(1));
     }
 }
 
-fn handle_clients(mut stream: TcpStream, tx: Sender<String>) {
+fn handle_clients(mut stream: TcpStream, tx: Sender<ClientMsg>, client_id: String) {
     // use tx to send the input from user
 
     loop {
@@ -40,10 +42,21 @@ fn handle_clients(mut stream: TcpStream, tx: Sender<String>) {
             break;
         }
 
+        let client_message = ClientMsg {
+            message: String::from_utf8_lossy(&buf[..read_bytes]).to_string(),
+            client_id: client_id.clone()
+        };
+        tx.send(client_message).unwrap();
+
         //stream.write(&buf[..read_bytes]).unwrap();
-        let msg = String::from_utf8_lossy(&buf[..read_bytes]).to_string();
-        tx.send(msg).unwrap();
+        // let msg = String::from_utf8_lossy(&buf[..read_bytes]).to_string();
     }
+}
+
+fn generate_client_id() -> String {
+    let charset = "aABbcCDdeEfFGgHhiIJjkKlLmMNnoOPpqQrRsStTuUvVWwxXyYzZ1!2@3#4$5%6^7&8*9(";
+    let cid = generate(16, charset);
+    cid
 }
 
 fn main() {
@@ -57,21 +70,20 @@ fn main() {
     });
 
     for stream in listener.incoming() {
+        let client_id = generate_client_id();
         let stream = stream.unwrap();
-        let tx_clone: Sender<String> = tx.clone();
-        client_tx.send(stream.try_clone().unwrap()).unwrap();
+        let tx_clone: Sender<ClientMsg> = tx.clone();
+        client_tx.send((stream.try_clone().unwrap(), client_id.clone())).unwrap();
 
         // connection thread handler
         let handle = thread::spawn(move || {
-            let _ = handle_clients(stream, tx_clone);
+            let _ = handle_clients(stream, tx_clone, client_id);
 
         });
         // join handle threads
         thread_vec.push(handle);
 
     }
-
-
 
     // for handle in thread_vec {
     //     handle.join().unwrap();
