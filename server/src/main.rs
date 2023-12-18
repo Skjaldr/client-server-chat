@@ -10,33 +10,49 @@ struct ClientMsg {
     client_id: String,
 }
 
-enum Messages {
-    Message,
-    Newclient,
+enum ServerMessages {
+    Newclient(TcpStream, String),
+    ClientMessage(ClientMsg),
 }
 
-fn broadcast_message(msg_rx: Receiver<ClientMsg>, client_rx: Receiver<(TcpStream, String)>) {
+fn broadcast_message(rx: Receiver<ServerMessages>) {
     let mut clients: Vec<(TcpStream, String)> = Vec::new();
     loop {
 
-        while let Ok((new_client, id)) = client_rx.try_recv() {
-            clients.push((new_client, id));
-        }
-
-
-        while let Ok(msg) = msg_rx.try_recv() {
-            for (client, id) in clients.iter_mut() {
-                if msg.client_id != *id {
-                    let _ = client.write_all(msg.message.as_bytes()).unwrap();
+        // changed to using an Enum to utilize a single thread intead of two.
+        if let Ok(message) = rx.recv() {
+            match message {
+                ServerMessages::Newclient(new_client, id) => {
+                    clients.push((new_client, id));
+                }
+                ServerMessages::ClientMessage(message) => {
+                    for (client, id) in clients.iter_mut() {
+                        if message.client_id != *id {
+                            let _ = client.write_all(message.message.as_bytes()).unwrap();
+                        }
+                    }
                 }
             }
         }
 
-        thread::sleep(Duration::from_millis(1));
+        // while let Ok((new_client, id)) = client_rx.try_recv() {
+        //     clients.push((new_client, id));
+        // }
+
+
+        // while let Ok(msg) = msg_rx.try_recv() {
+        //     for (client, id) in clients.iter_mut() {
+        //         if msg.client_id != *id {
+        //             let _ = client.write_all(msg.message.as_bytes()).unwrap();
+        //         }
+        //     }
+        // }
+
+        // thread::sleep(Duration::from_millis(1));
     }
 }
 
-fn handle_clients(mut stream: TcpStream, tx: Sender<ClientMsg>, client_id: String) {
+fn handle_clients(mut stream: TcpStream, tx: Sender<ServerMessages>, client_id: String) {
     // use tx to send the input from user
 
     loop {
@@ -47,10 +63,11 @@ fn handle_clients(mut stream: TcpStream, tx: Sender<ClientMsg>, client_id: Strin
             break;
         }
 
-        let client_message = ClientMsg {
+        //changed having two receiving channels to a single receiver based on feedback provided.
+        let client_message = ServerMessages::ClientMessage(ClientMsg {
             message: String::from_utf8_lossy(&buf[..read_bytes]).to_string(),
             client_id: client_id.clone()
-        };
+        });
         tx.send(client_message).unwrap();
 
         //stream.write(&buf[..read_bytes]).unwrap();
@@ -67,21 +84,23 @@ fn generate_client_id() -> String {
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
 
+    // Changed to a single channel utilizing an enum.  Based on provided feedback from null_reference_user
+    // on reddit.
     let (tx, rx) = mpsc::channel();
-    let (client_tx, client_rx)= mpsc::channel();
     let mut thread_vec: Vec<thread::JoinHandle<_>> = Vec::new();
 
     let broadcast = thread::spawn(move || {
-        broadcast_message(rx, client_rx);
+        broadcast_message(rx);
     });
 
     for stream in listener.incoming() {
         let client_id = generate_client_id();
         let stream = stream.unwrap();
-        let tx_clone: Sender<ClientMsg> = tx.clone();
-        client_tx.send((stream.try_clone().unwrap(), client_id.clone())).unwrap();
+        let tx_clone: Sender<ServerMessages> = tx.clone();
+        tx_clone.send(ServerMessages::Newclient(stream.try_clone().unwrap(), client_id.clone())).unwrap();
 
         // connection thread handler
+        let tx_clone = tx_clone.clone();
         let handle = thread::spawn(move || {
             let _ = handle_clients(stream, tx_clone, client_id);
 
