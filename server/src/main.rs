@@ -10,6 +10,11 @@ struct ClientMsg {
     client_id: String,
 }
 
+enum Messages {
+    Message,
+    Newclient,
+}
+
 fn broadcast_message(msg_rx: Receiver<ClientMsg>, client_rx: Receiver<(TcpStream, String)>) {
     let mut clients: Vec<(TcpStream, String)> = Vec::new();
     loop {
@@ -61,6 +66,7 @@ fn generate_client_id() -> String {
 
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:7878").unwrap();
+
     let (tx, rx) = mpsc::channel();
     let (client_tx, client_rx)= mpsc::channel();
     let mut thread_vec: Vec<thread::JoinHandle<_>> = Vec::new();
